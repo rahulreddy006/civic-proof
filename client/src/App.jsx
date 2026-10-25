@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   RefreshCw,
   Cpu,
-  Activity,
   Clock,
   FileText,
   Image as ImageIcon,
@@ -14,11 +13,22 @@ import {
   Check,
   X,
   Send,
-  Sparkles
+  Sparkles,
+  HelpCircle,
+  Info,
+  ArrowRight,
+  RotateCcw,
+  Edit3,
+  ExternalLink,
+  ChevronRight
 } from 'lucide-react';
 
+const MAX_IMAGE_SIZE = 3 * 1024 * 1024; // 3 MB
+const MAX_TOTAL_SIZE = 9 * 1024 * 1024; // 9 MB
+const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+
 export default function App() {
-  // Backend health state
+  // System Health
   const [health, setHealth] = useState({
     loading: true,
     online: false,
@@ -27,39 +37,62 @@ export default function App() {
     error: null
   });
 
-  // Upload & Smoke test state
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [previewUrl, setPreviewUrl] = useState(null);
-  const [customPrompt, setCustomPrompt] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [errorFeedback, setErrorFeedback] = useState(null);
-  const [smokeTestResult, setSmokeTestResult] = useState(null);
-  const [copied, setCopied] = useState(false);
-
-  // Model connectivity ping state
-  const [pingState, setPingState] = useState({
-    loading: false,
-    result: null,
-    error: null
+  // Evidence Inputs State
+  const [evidence, setEvidence] = useState({
+    originalImage: null,
+    closureEvidence: null,
+    currentImage: null
   });
 
-  const fileInputRef = useRef(null);
+  // Image Object URL Previews
+  const [previews, setPreviews] = useState({
+    originalImage: null,
+    closureEvidence: null,
+    currentImage: null
+  });
+
+  // Validation Errors per Field
+  const [fieldErrors, setFieldErrors] = useState({
+    originalImage: null,
+    closureEvidence: null,
+    currentImage: null
+  });
+
+  // Closure Context Text
+  const [closureText, setClosureText] = useState('');
+
+  // Analysis / Request State
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [globalError, setGlobalError] = useState(null);
+  const [analysisResult, setAnalysisResult] = useState(null);
+
+  // Editable Follow-Up Message State
+  const [editableMessage, setEditableMessage] = useState('');
+
+  // Copy Feedback
+  const [copiedMessage, setCopiedMessage] = useState(false);
+  const [copiedSummary, setCopiedSummary] = useState(false);
+
+  // File Input Refs for Triggering Picker
+  const originalInputRef = useRef(null);
+  const closureInputRef = useRef(null);
+  const currentInputRef = useRef(null);
 
   // Fetch backend health on mount
   useEffect(() => {
-    fetchHealth();
+    checkHealth();
   }, []);
 
-  // Revoke object URL on file change / unmount
+  // Cleanup object URLs on unmount
   useEffect(() => {
     return () => {
-      if (previewUrl) {
-        URL.revokeObjectURL(previewUrl);
-      }
+      Object.values(previews).forEach(url => {
+        if (url) URL.revokeObjectURL(url);
+      });
     };
-  }, [previewUrl]);
+  }, []);
 
-  const fetchHealth = async () => {
+  const checkHealth = async () => {
     setHealth(prev => ({ ...prev, loading: true }));
     try {
       const res = await fetch('/api/health');
@@ -78,84 +111,122 @@ export default function App() {
         online: false,
         hasApiKey: false,
         model: 'gemma-4-26b-a4b-it',
-        error: 'Unable to reach backend at http://localhost:5000'
+        error: 'Backend is offline or unreachable at http://localhost:5000'
       });
     }
   };
 
-  const handleFileSelect = (file) => {
+  // Format bytes to human readable string
+  const formatFileSize = (bytes) => {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+  };
+
+  // Handle File Selection
+  const handleFileChange = (field, file) => {
     if (!file) return;
 
-    setErrorFeedback(null);
-    setSmokeTestResult(null);
+    // Reset error for this field
+    setFieldErrors(prev => ({ ...prev, [field]: null }));
+    setGlobalError(null);
 
-    const validTypes = ['image/jpeg', 'image/png', 'image/webp'];
-    if (!validTypes.includes(file.type)) {
-      setErrorFeedback(`Invalid file format: ${file.type}. Please select a JPEG, PNG, or WebP image.`);
+    // Validate MIME type
+    if (!ALLOWED_MIME_TYPES.includes(file.type)) {
+      setFieldErrors(prev => ({
+        ...prev,
+        [field]: `Invalid format (${file.type || 'unknown'}). Only JPEG, PNG, and WebP are allowed.`
+      }));
       return;
     }
 
-    if (file.size > 5 * 1024 * 1024) {
-      setErrorFeedback(`File is too large (${(file.size / (1024 * 1024)).toFixed(2)} MB). Max limit is 5 MB.`);
+    // Validate individual file size
+    if (file.size > MAX_IMAGE_SIZE) {
+      setFieldErrors(prev => ({
+        ...prev,
+        [field]: `File exceeds 3 MB limit (${formatFileSize(file.size)}). Please choose a smaller image.`
+      }));
       return;
     }
 
-    if (previewUrl) {
-      URL.revokeObjectURL(previewUrl);
+    // Check total combined size
+    const currentTotal = Object.entries(evidence).reduce((acc, [k, f]) => {
+      if (k === field) return acc + file.size;
+      return acc + (f ? f.size : 0);
+    }, 0);
+
+    if (currentTotal > MAX_TOTAL_SIZE) {
+      setFieldErrors(prev => ({
+        ...prev,
+        [field]: `Total evidence size (${formatFileSize(currentTotal)}) would exceed the 9 MB combined limit.`
+      }));
+      return;
     }
 
-    setSelectedFile(file);
-    setPreviewUrl(URL.createObjectURL(file));
+    // Revoke previous preview URL for this field if present
+    if (previews[field]) {
+      URL.revokeObjectURL(previews[field]);
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    setPreviews(prev => ({ ...prev, [field]: objectUrl }));
+    setEvidence(prev => ({ ...prev, [field]: file }));
   };
 
-  const handleFileInputChange = (e) => {
-    const file = e.target.files?.[0];
-    if (file) handleFileSelect(file);
+  // Remove File
+  const handleRemoveFile = (field) => {
+    if (previews[field]) {
+      URL.revokeObjectURL(previews[field]);
+    }
+    setPreviews(prev => ({ ...prev, [field]: null }));
+    setEvidence(prev => ({ ...prev, [field]: null }));
+    setFieldErrors(prev => ({ ...prev, [field]: null }));
+
+    // Reset corresponding input element
+    if (field === 'originalImage' && originalInputRef.current) originalInputRef.current.value = '';
+    if (field === 'closureEvidence' && closureInputRef.current) closureInputRef.current.value = '';
+    if (field === 'currentImage' && currentInputRef.current) currentInputRef.current.value = '';
   };
 
-  const handleDrop = (e) => {
+  // Drag and Drop helpers
+  const handleDrop = (field, e) => {
     e.preventDefault();
     const file = e.dataTransfer.files?.[0];
-    if (file) handleFileSelect(file);
+    if (file) handleFileChange(field, file);
   };
 
-  const handleDragOver = (e) => {
-    e.preventDefault();
-  };
+  const handleDragOver = (e) => e.preventDefault();
 
-  const handleClearImage = () => {
-    if (previewUrl) {
-      URL.revokeObjectURL(previewUrl);
-    }
-    setSelectedFile(null);
-    setPreviewUrl(null);
-    setSmokeTestResult(null);
-    setErrorFeedback(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
+  // Readiness calculation
+  const isReady = Boolean(
+    evidence.originalImage &&
+    evidence.closureEvidence &&
+    evidence.currentImage &&
+    !fieldErrors.originalImage &&
+    !fieldErrors.closureEvidence &&
+    !fieldErrors.currentImage
+  );
 
-  // Run the Gemma 4 Smoke Test with real image
-  const handleRunSmokeTest = async (e) => {
+  // Submit Evidence for Analysis
+  const handleAnalyze = async (e) => {
     if (e) e.preventDefault();
-    if (!selectedFile) {
-      setErrorFeedback('Please select an image first.');
-      return;
-    }
+    if (!isReady || isAnalyzing) return;
 
-    setIsSubmitting(true);
-    setErrorFeedback(null);
-    setSmokeTestResult(null);
+    setIsAnalyzing(true);
+    setGlobalError(null);
 
     const formData = new FormData();
-    formData.append('image', selectedFile);
-    if (customPrompt.trim()) {
-      formData.append('prompt', customPrompt.trim());
+    formData.append('originalImage', evidence.originalImage);
+    formData.append('closureEvidence', evidence.closureEvidence);
+    formData.append('currentImage', evidence.currentImage);
+    if (closureText.trim()) {
+      formData.append('closureText', closureText.trim());
     }
 
     try {
-      const res = await fetch('/api/gemma-smoke-test', {
+      const res = await fetch('/api/analyze-civic-evidence', {
         method: 'POST',
         body: formData
       });
@@ -163,336 +234,819 @@ export default function App() {
       const data = await res.json();
 
       if (!res.ok || data.status === 'error') {
-        const msg = data.error?.message || `Server returned error status ${res.status}`;
-        throw new Error(msg);
+        const errorMsg = data.error?.message || `Server returned error status ${res.status}`;
+        throw new Error(errorMsg);
       }
 
-      setSmokeTestResult(data.data);
+      setAnalysisResult(data.data);
+      setEditableMessage(data.data.suggestedFollowUp || '');
+      // Scroll to results
+      setTimeout(() => {
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      }, 100);
     } catch (err) {
-      setErrorFeedback(err.message || 'An unexpected error occurred while executing the smoke test.');
+      setGlobalError(err.message || 'An unexpected error occurred during evidence analysis. Please check your network or try again.');
     } finally {
-      setIsSubmitting(false);
+      setIsAnalyzing(false);
     }
   };
 
-  // Test model connectivity
-  const handleCheckConnectivity = async () => {
-    setPingState({ loading: true, result: null, error: null });
-    try {
-      const res = await fetch('/api/health/model-check', { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok || data.status === 'error') {
-        throw new Error(data.error?.message || 'Model connectivity check failed.');
-      }
-      setPingState({ loading: false, result: data.data, error: null });
-    } catch (err) {
-      setPingState({ loading: false, result: null, error: err.message });
-    }
+  // Reset entire review
+  const handleReset = () => {
+    Object.values(previews).forEach(url => {
+      if (url) URL.revokeObjectURL(url);
+    });
+    setEvidence({ originalImage: null, closureEvidence: null, currentImage: null });
+    setPreviews({ originalImage: null, closureEvidence: null, currentImage: null });
+    setFieldErrors({ originalImage: null, closureEvidence: null, currentImage: null });
+    setClosureText('');
+    setAnalysisResult(null);
+    setEditableMessage('');
+    setGlobalError(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleCopy = (text) => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  // Copy Follow-up Message
+  const handleCopyMessage = () => {
+    if (!editableMessage) return;
+    navigator.clipboard.writeText(editableMessage);
+    setCopiedMessage(true);
+    setTimeout(() => setCopiedMessage(false), 2000);
+  };
+
+  // Copy Full Evidence Summary Report
+  const handleCopySummary = () => {
+    if (!analysisResult) return;
+    const report = [
+      `CIVICPROOF EVIDENCE REVIEW REPORT`,
+      `Generated: ${new Date().toLocaleString()}`,
+      `AI Model: ${analysisResult.model || health.model}`,
+      `--------------------------------------------------`,
+      `ASSESSMENT STATUS: ${analysisResult.status.toUpperCase()}`,
+      `SUMMARY: ${analysisResult.summary}`,
+      ``,
+      `1. ORIGINAL REPORT OBSERVATIONS:`,
+      ...analysisResult.originalObservations.map(o => `  • ${o}`),
+      ``,
+      `2. CLOSURE CLAIM DETAILS:`,
+      `  ${analysisResult.closureClaim}`,
+      ``,
+      `3. CURRENT CONDITION OBSERVATIONS:`,
+      ...analysisResult.currentObservations.map(o => `  • ${o}`),
+      ``,
+      `4. EVIDENCE COMPARISON:`,
+      `  ${analysisResult.evidenceComparison}`,
+      ``,
+      `5. UNCERTAINTIES & LIMITATIONS:`,
+      ...analysisResult.uncertainties.map(u => `  • Uncertainty: ${u}`),
+      ...analysisResult.limitations.map(l => `  • Limitation: ${l}`),
+      ``,
+      `6. SUGGESTED FOLLOW-UP MESSAGE:`,
+      editableMessage || analysisResult.suggestedFollowUp,
+      `--------------------------------------------------`,
+      `Note: This advisory review is based strictly on citizen-provided visual evidence and closure notes.`
+    ].join('\n');
+
+    navigator.clipboard.writeText(report);
+    setCopiedSummary(true);
+    setTimeout(() => setCopiedSummary(false), 2000);
+  };
+
+  // Helper for Status Badge Display
+  const getStatusConfig = (status) => {
+    switch (status) {
+      case 'still_visible':
+        return {
+          label: 'Still Visible',
+          badgeClass: 'bg-amber-50 text-amber-900 border-amber-300',
+          icon: AlertCircle,
+          iconColor: 'text-amber-600',
+          description: 'The reported civic concern appears to remain visible in the current evidence.'
+        };
+      case 'partly_resolved':
+        return {
+          label: 'Partly Resolved',
+          badgeClass: 'bg-teal-50 text-teal-900 border-teal-300',
+          icon: Clock,
+          iconColor: 'text-teal-600',
+          description: 'The concern appears to have improved, but a relevant portion remains visible.'
+        };
+      case 'appears_resolved':
+        return {
+          label: 'Appears Resolved',
+          badgeClass: 'bg-emerald-50 text-emerald-900 border-emerald-300',
+          icon: CheckCircle2,
+          iconColor: 'text-emerald-600',
+          description: 'The original visible concern does not appear to remain in the supplied current evidence.'
+        };
+      case 'inconclusive':
+      default:
+        return {
+          label: 'Inconclusive',
+          badgeClass: 'bg-slate-100 text-slate-800 border-slate-300',
+          icon: HelpCircle,
+          iconColor: 'text-slate-600',
+          description: 'The available evidence does not support a reliable comparison (e.g. angle differences or missing context).'
+        };
+    }
   };
 
   return (
-    <div className="min-h-screen bg-[#090d16] text-slate-100 antialiased flex flex-col">
-      {/* Top Navigation / Brand Header */}
-      <header className="border-b border-slate-800 bg-[#0d1322]/80 backdrop-blur sticky top-0 z-20">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
+      {/* Top Header */}
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xs">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-lg shadow-blue-500/25">
-              <ShieldCheck className="w-6 h-6" />
+            <div className="w-9 h-9 rounded-lg bg-teal-700 flex items-center justify-center text-white shadow-xs">
+              <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="font-bold text-xl tracking-tight text-white">CivicProof</h1>
-                <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                  Phase 1 Foundation
+                <span className="font-bold text-lg text-slate-900 tracking-tight">CivicProof</span>
+                <span className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-teal-50 text-teal-700 border border-teal-200">
+                  Citizen Review
                 </span>
               </div>
-              <p className="text-xs text-slate-400">
-                Evidence that speaks for your neighbourhood
-              </p>
+              <p className="text-xs text-slate-500">Evidence that speaks for your neighbourhood</p>
             </div>
           </div>
 
-          {/* System Status Indicators */}
           <div className="flex items-center gap-3 text-xs">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/60">
-              <span className="text-slate-400">Backend:</span>
-              {health.loading ? (
-                <span className="text-amber-400 flex items-center gap-1 font-mono">
-                  <RefreshCw className="w-3 h-3 animate-spin" /> Checking
-                </span>
-              ) : health.online ? (
-                <span className="text-emerald-400 flex items-center gap-1 font-medium">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  Online
-                </span>
-              ) : (
-                <span className="text-rose-400 flex items-center gap-1 font-medium">
-                  <span className="w-2 h-2 rounded-full bg-rose-500" />
-                  Offline
-                </span>
-              )}
+            <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200 text-slate-600 font-mono">
+              <Cpu className="w-3.5 h-3.5 text-teal-700" />
+              <span>{health.model}</span>
             </div>
-
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/60 font-mono">
-              <Cpu className="w-3.5 h-3.5 text-indigo-400" />
-              <span className="text-slate-300">{health.model}</span>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200 text-xs">
+              <span className={`w-2 h-2 rounded-full ${health.online ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+              <span className="text-slate-600">{health.online ? 'Service Active' : 'Offline'}</span>
             </div>
-
-            <button
-              onClick={fetchHealth}
-              title="Refresh health status"
-              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 py-8 space-y-6">
-        {/* Project Context & Purpose Banner */}
-        <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 relative overflow-hidden">
-          <div className="max-w-2xl">
-            <h2 className="text-lg font-semibold text-white mb-2 flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-blue-400" />
-              About CivicProof
-            </h2>
-            <p className="text-sm text-slate-300 leading-relaxed">
-              Civic complaints are sometimes marked resolved while the underlying issue remains visible.
-              CivicProof is a citizen-side evidence review assistant that connects an original report photograph,
-              a closure notice, and a current-condition photograph into a factual, transparent follow-up report.
+      {/* Main Container */}
+      <main className="flex-1 max-w-5xl mx-auto w-full px-4 sm:px-6 py-8 space-y-8">
+        {/* Hero & Intro Section */}
+        <section className="bg-white rounded-xl border border-slate-200 p-6 sm:p-8 shadow-xs">
+          <div className="max-w-3xl space-y-3">
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
+              Help make your civic complaint evidence clear.
+            </h1>
+            <p className="text-base text-slate-600 leading-relaxed">
+              Bring together the original issue, the closure message, and the current condition.
+              Prepare your evidence for a clear, factual follow-up.
             </p>
-            <div className="mt-4 pt-3 border-t border-slate-800/60 flex flex-wrap items-center gap-4 text-xs text-slate-400">
-              <span><strong>Phase 1 Scope:</strong> Technical foundation & Real Gemma 4 API image verification</span>
-              <span>•</span>
-              <span><strong>AI Backend:</strong> Google Gen AI SDK (@google/genai)</span>
+
+            <div className="pt-2 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs text-slate-600">
+              <div className="flex items-start gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-200/60">
+                <span className="font-bold text-teal-700">1.</span>
+                <span>Original complaint photo</span>
+              </div>
+              <div className="flex items-start gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-200/60">
+                <span className="font-bold text-teal-700">2.</span>
+                <span>Closure notice screenshot</span>
+              </div>
+              <div className="flex items-start gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-200/60">
+                <span className="font-bold text-teal-700">3.</span>
+                <span>Current condition photo</span>
+              </div>
+            </div>
+
+            {/* Privacy notice */}
+            <div className="pt-2 flex items-center gap-2 text-xs text-slate-500">
+              <Info className="w-4 h-4 text-slate-400 shrink-0" />
+              <span>
+                <strong>Privacy notice:</strong> Uploaded images are transmitted to the server-side Gemma AI model for analysis and are not retained permanently.
+              </span>
             </div>
           </div>
         </section>
 
         {/* Global Error Banner */}
-        {health.error && (
-          <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-sm flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 shrink-0 text-rose-400 mt-0.5" />
-            <div>
-              <p className="font-medium">Backend Connection Error</p>
-              <p className="text-xs text-rose-300/80 mt-1">{health.error}</p>
+        {globalError && (
+          <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-sm flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-semibold">Analysis Request Error</p>
+              <p className="text-xs text-rose-700">{globalError}</p>
             </div>
           </div>
         )}
 
-        {/* Model Connectivity Ping (Optional quick check) */}
-        <section className="bg-slate-900/40 border border-slate-800/80 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-          <div>
-            <div className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-              <Activity className="w-4 h-4 text-cyan-400" />
-              API Connectivity Status
+        {/* Upload Form Section */}
+        <section className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">Upload Evidence</h2>
+              <p className="text-xs text-slate-500">
+                Provide all three evidence items below. JPEG, PNG, or WebP up to 3 MB each.
+              </p>
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Test direct communication with the configured Gemma 4 model via the server-side Gemini API.
+            <div className="flex items-center gap-2">
+              <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${
+                isReady
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                  : 'bg-slate-100 text-slate-600 border-slate-200'
+              }`}>
+                {isReady ? 'Ready for Analysis' : '3 Images Required'}
+              </span>
+            </div>
+          </div>
+
+          {/* Three Evidence Cards Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            {/* Input A: Original Issue Photo */}
+            <div className={`bg-white rounded-xl border p-4 flex flex-col justify-between transition-all ${
+              fieldErrors.originalImage ? 'border-rose-300 ring-1 ring-rose-200' : 'border-slate-200 shadow-xs'
+            }`}>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-wider text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                    Input A
+                  </span>
+                  {evidence.originalImage && (
+                    <span className="text-[11px] font-medium text-emerald-700 flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Added
+                    </span>
+                  )}
+                </div>
+
+                <div>
+                  <h3 className="font-semibold text-sm text-slate-900">Original issue</h3>
+                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                    Upload the photograph that shows the issue when it was first reported.
+                  </p>
+                </div>
+
+                {/* Dropzone or Preview */}
+                {!previews.originalImage ? (
+                  <div
+                    onDrop={(e) => handleDrop('originalImage', e)}
+                    onDragOver={handleDragOver}
+                    onClick={() => originalInputRef.current?.click()}
+                    className="border-2 border-dashed border-slate-200 hover:border-teal-500 hover:bg-teal-50/20 transition-all rounded-lg p-6 text-center cursor-pointer flex flex-col items-center justify-center min-h-[140px]"
+                  >
+                    <input
+                      ref={originalInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      className="hidden"
+                      onChange={(e) => handleFileChange('originalImage', e.target.files?.[0])}
+                    />
+                    <Upload className="w-6 h-6 text-slate-400 mb-2" />
+                    <span className="text-xs font-medium text-slate-700">Click or drop image</span>
+                    <span className="text-[11px] text-slate-400 mt-0.5">JPEG, PNG, WebP (max 3 MB)</span>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="h-36 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center relative group">
+                      <img
+                        src={previews.originalImage}
+                        alt="Original report"
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-slate-600 pt-1">
+                      <span className="truncate max-w-[150px] font-medium">{evidence.originalImage?.name}</span>
+                      <span className="text-slate-400 font-mono">{formatFileSize(evidence.originalImage?.size)}</span>
+                    </div>
+                  </div>
+                )}
+
+                {fieldErrors.originalImage && (
+                  <p className="text-xs text-rose-600 flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{fieldErrors.originalImage}</span>
+                  </p>
+                )}
+              </div>
+
+              {previews.originalImage && (
+                <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => originalInputRef.current?.click()}
+                    className="text-xs text-slate-600 hover:text-teal-700 font-medium py-1 px-2 rounded hover:bg-slate-100 transition"
+                  >
+                    Replace
+                  </button>
+                  <input
+                    ref={originalInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="hidden"
+                    onChange={(e) => handleFileChange('originalImage', e.target.files?.[0])}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveFile('originalImage')}
+                    className="text-xs text-rose-600 hover:text-rose-800 font-medium py-1 px-2 rounded hover:bg-rose-50 transition"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Input B: Closure Evidence */}
+            <div className={`bg-white rounded-xl border p-4 flex flex-col justify-between transition-all ${
+              fieldErrors.closureEvidence ? 'border-rose-300 ring-1 ring-rose-200' : 'border-slate-200 shadow-xs'
+            }`}>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-wider text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                    Input B
+                  </span>
+                  {evidence.closureEvidence && (
+                    <span className="text-[11px] font-medium text-emerald-700 flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Added
+                    </span>
+                  )}
+                </div>
+
+                <div>
+                  <h3 className="font-semibold text-sm text-slate-900">Closure evidence</h3>
+                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                    Upload the closure notification or screenshot showing the reported status.
+                  </p>
+                </div>
+
+                {/* Dropzone or Preview */}
+                {!previews.closureEvidence ? (
+                  <div
+                    onDrop={(e) => handleDrop('closureEvidence', e)}
+                    onDragOver={handleDragOver}
+                    onClick={() => closureInputRef.current?.click()}
+                    className="border-2 border-dashed border-slate-200 hover:border-teal-500 hover:bg-teal-50/20 transition-all rounded-lg p-6 text-center cursor-pointer flex flex-col items-center justify-center min-h-[140px]"
+                  >
+                    <input
+                      ref={closureInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      className="hidden"
+                      onChange={(e) => handleFileChange('closureEvidence', e.target.files?.[0])}
+                    />
+                    <Upload className="w-6 h-6 text-slate-400 mb-2" />
+                    <span className="text-xs font-medium text-slate-700">Click or drop screenshot</span>
+                    <span className="text-[11px] text-slate-400 mt-0.5">JPEG, PNG, WebP (max 3 MB)</span>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="h-36 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center relative group">
+                      <img
+                        src={previews.closureEvidence}
+                        alt="Closure notification"
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-slate-600 pt-1">
+                      <span className="truncate max-w-[150px] font-medium">{evidence.closureEvidence?.name}</span>
+                      <span className="text-slate-400 font-mono">{formatFileSize(evidence.closureEvidence?.size)}</span>
+                    </div>
+                  </div>
+                )}
+
+                {fieldErrors.closureEvidence && (
+                  <p className="text-xs text-rose-600 flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{fieldErrors.closureEvidence}</span>
+                  </p>
+                )}
+              </div>
+
+              {previews.closureEvidence && (
+                <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => closureInputRef.current?.click()}
+                    className="text-xs text-slate-600 hover:text-teal-700 font-medium py-1 px-2 rounded hover:bg-slate-100 transition"
+                  >
+                    Replace
+                  </button>
+                  <input
+                    ref={closureInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="hidden"
+                    onChange={(e) => handleFileChange('closureEvidence', e.target.files?.[0])}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveFile('closureEvidence')}
+                    className="text-xs text-rose-600 hover:text-rose-800 font-medium py-1 px-2 rounded hover:bg-rose-50 transition"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Input C: Current Condition */}
+            <div className={`bg-white rounded-xl border p-4 flex flex-col justify-between transition-all ${
+              fieldErrors.currentImage ? 'border-rose-300 ring-1 ring-rose-200' : 'border-slate-200 shadow-xs'
+            }`}>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-wider text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                    Input C
+                  </span>
+                  {evidence.currentImage && (
+                    <span className="text-[11px] font-medium text-emerald-700 flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Added
+                    </span>
+                  )}
+                </div>
+
+                <div>
+                  <h3 className="font-semibold text-sm text-slate-900">Current condition</h3>
+                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                    Upload a recent photograph showing the issue as it appears now.
+                  </p>
+                </div>
+
+                {/* Dropzone or Preview */}
+                {!previews.currentImage ? (
+                  <div
+                    onDrop={(e) => handleDrop('currentImage', e)}
+                    onDragOver={handleDragOver}
+                    onClick={() => currentInputRef.current?.click()}
+                    className="border-2 border-dashed border-slate-200 hover:border-teal-500 hover:bg-teal-50/20 transition-all rounded-lg p-6 text-center cursor-pointer flex flex-col items-center justify-center min-h-[140px]"
+                  >
+                    <input
+                      ref={currentInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      className="hidden"
+                      onChange={(e) => handleFileChange('currentImage', e.target.files?.[0])}
+                    />
+                    <Upload className="w-6 h-6 text-slate-400 mb-2" />
+                    <span className="text-xs font-medium text-slate-700">Click or drop photo</span>
+                    <span className="text-[11px] text-slate-400 mt-0.5">JPEG, PNG, WebP (max 3 MB)</span>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="h-36 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center relative group">
+                      <img
+                        src={previews.currentImage}
+                        alt="Current condition"
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-slate-600 pt-1">
+                      <span className="truncate max-w-[150px] font-medium">{evidence.currentImage?.name}</span>
+                      <span className="text-slate-400 font-mono">{formatFileSize(evidence.currentImage?.size)}</span>
+                    </div>
+                  </div>
+                )}
+
+                {fieldErrors.currentImage && (
+                  <p className="text-xs text-rose-600 flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{fieldErrors.currentImage}</span>
+                  </p>
+                )}
+              </div>
+
+              {previews.currentImage && (
+                <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => currentInputRef.current?.click()}
+                    className="text-xs text-slate-600 hover:text-teal-700 font-medium py-1 px-2 rounded hover:bg-slate-100 transition"
+                  >
+                    Replace
+                  </button>
+                  <input
+                    ref={currentInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="hidden"
+                    onChange={(e) => handleFileChange('currentImage', e.target.files?.[0])}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveFile('currentImage')}
+                    className="text-xs text-rose-600 hover:text-rose-800 font-medium py-1 px-2 rounded hover:bg-rose-50 transition"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Optional Closure Note Card */}
+          <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-2">
+            <div className="flex items-center justify-between">
+              <label htmlFor="closureNote" className="text-xs font-semibold text-slate-800">
+                Closure note (optional)
+              </label>
+              <span className={`text-[11px] font-mono ${
+                closureText.length > 900 ? 'text-amber-600 font-bold' : 'text-slate-400'
+              }`}>
+                {closureText.length} / 1000
+              </span>
+            </div>
+            <textarea
+              id="closureNote"
+              value={closureText}
+              onChange={(e) => setClosureText(e.target.value.slice(0, 1000))}
+              placeholder="Describe what the closure message says or add relevant context..."
+              rows={2}
+              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 focus:border-teal-600 focus:ring-1 focus:ring-teal-600 outline-none text-sm text-slate-800 placeholder-slate-400 resize-none transition bg-slate-50/50"
+            />
+            <p className="text-[11px] text-slate-400">
+              User-provided note. Treated as context, not independently verified official records.
             </p>
           </div>
-          <div className="flex items-center gap-3">
-            {pingState.result && (
-              <span className="text-xs text-emerald-400 font-mono flex items-center gap-1 bg-emerald-500/10 px-2.5 py-1 rounded-md border border-emerald-500/20">
-                <Check className="w-3.5 h-3.5" /> Verified ({pingState.result.latencyMs}ms)
-              </span>
-            )}
-            {pingState.error && (
-              <span className="text-xs text-rose-400 font-mono flex items-center gap-1 bg-rose-500/10 px-2.5 py-1 rounded-md border border-rose-500/20">
-                <AlertCircle className="w-3.5 h-3.5" /> Error
-              </span>
-            )}
+
+          {/* Action Row */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
+            <div className="text-xs text-slate-500">
+              {isReady ? (
+                <span className="text-teal-700 font-medium flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-teal-600" />
+                  All 3 required evidence items are attached and valid.
+                </span>
+              ) : (
+                <span>Please attach all 3 evidence images to enable analysis.</span>
+              )}
+            </div>
+
             <button
-              onClick={handleCheckConnectivity}
-              disabled={pingState.loading || !health.online}
-              className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 transition disabled:opacity-50 flex items-center gap-1.5"
+              type="button"
+              onClick={handleAnalyze}
+              disabled={!isReady || isAnalyzing || !health.online}
+              className="w-full sm:w-auto px-6 py-3 rounded-lg bg-teal-700 hover:bg-teal-800 active:bg-teal-900 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium text-sm shadow-xs transition flex items-center justify-center gap-2 cursor-pointer"
             >
-              {pingState.loading && <RefreshCw className="w-3 h-3 animate-spin" />}
-              {pingState.loading ? 'Pinging API...' : 'Ping Gemma API'}
+              {isAnalyzing ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Analyzing with Gemma 4...</span>
+                </>
+              ) : (
+                <>
+                  <Send className="w-4 h-4" />
+                  <span>Analyze Evidence</span>
+                </>
+              )}
             </button>
           </div>
         </section>
 
-        {/* Phase 1 Deliverable: Real Image-Input Smoke Test */}
-        <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 space-y-6">
-          <div className="border-b border-slate-800/80 pb-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-base text-white flex items-center gap-2">
-                <ImageIcon className="w-5 h-5 text-blue-400" />
-                Gemma 4 Image Smoke Test
-              </h3>
-              <span className="text-xs font-mono text-slate-400 bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700/60">
-                POST /api/gemma-smoke-test
-              </span>
-            </div>
-            <p className="text-xs text-slate-400 mt-1">
-              Upload a test image (e.g. road pothole, streetlight, garbage overflow, or civic issue) to verify that the real Gemma 4 multimodal model processes it.
-            </p>
-          </div>
+        {/* Results Section */}
+        {analysisResult && (
+          <section className="bg-white rounded-xl border border-slate-200 p-6 sm:p-8 shadow-xs space-y-8 animate-fadeIn">
+            {/* Header: Status and Explanation */}
+            {(() => {
+              const statusCfg = getStatusConfig(analysisResult.status);
+              const StatusIcon = statusCfg.icon;
+              return (
+                <div className="border-b border-slate-200 pb-6 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        Assessment Result
+                      </span>
+                    </div>
+                    <div className="text-xs font-mono text-slate-400 flex items-center gap-3">
+                      <span>Model: {analysisResult.model}</span>
+                      <span>•</span>
+                      <span>Latency: {analysisResult.latencyMs}ms</span>
+                    </div>
+                  </div>
 
-          <form onSubmit={handleRunSmokeTest} className="space-y-5">
-            {/* Image Dropzone / Picker */}
-            {!selectedFile ? (
-              <div
-                onDrop={handleDrop}
-                onDragOver={handleDragOver}
-                onClick={() => fileInputRef.current?.click()}
-                className="border-2 border-dashed border-slate-700 hover:border-blue-500/60 hover:bg-slate-800/40 transition-colors rounded-xl p-8 text-center cursor-pointer group"
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  className="hidden"
-                  onChange={handleFileInputChange}
-                />
-                <div className="w-12 h-12 rounded-full bg-blue-500/10 text-blue-400 flex items-center justify-center mx-auto mb-3 group-hover:scale-105 transition-transform">
-                  <Upload className="w-6 h-6" />
+                  {/* Controlled Status Banner */}
+                  <div className={`p-4 rounded-xl border flex items-start gap-3.5 ${statusCfg.badgeClass}`}>
+                    <StatusIcon className={`w-6 h-6 shrink-0 mt-0.5 ${statusCfg.iconColor}`} />
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-base font-bold tracking-tight">
+                          {statusCfg.label}
+                        </h3>
+                      </div>
+                      <p className="text-xs sm:text-sm leading-relaxed opacity-90">
+                        {statusCfg.description}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Summary Statement */}
+                  <div className="pt-2">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Summary</h4>
+                    <p className="text-sm text-slate-800 leading-relaxed font-medium">
+                      {analysisResult.summary}
+                    </p>
+                  </div>
+
+                  {/* Advisory Notice */}
+                  <div className="flex items-center gap-2 text-[11px] text-slate-400 pt-1">
+                    <Info className="w-3.5 h-3.5 shrink-0" />
+                    <span>AI-assisted evidence review based strictly on user-supplied photographs. Not official verification or proof of misconduct.</span>
+                  </div>
                 </div>
-                <p className="text-sm font-medium text-slate-200">
-                  Click to select or drag and drop a test image
-                </p>
-                <p className="text-xs text-slate-400 mt-1">
-                  Supports JPEG, PNG, and WebP (up to 5 MB)
+              );
+            })()}
+
+            {/* Evidence Comparison Grid */}
+            <div className="space-y-4">
+              <h3 className="font-bold text-sm text-slate-900 uppercase tracking-wider">
+                Evidence Observations & Comparison
+              </h3>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                {/* Original Observations Card */}
+                <div className="bg-slate-50 rounded-lg border border-slate-200 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-teal-800">Original issue</span>
+                    {previews.originalImage && (
+                      <img
+                        src={previews.originalImage}
+                        alt="Original"
+                        className="w-8 h-8 rounded object-cover border border-slate-200"
+                      />
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-700 space-y-1.5 leading-relaxed">
+                    {analysisResult.originalObservations?.map((obs, i) => (
+                      <p key={i} className="flex items-start gap-1.5">
+                        <span className="text-teal-700 font-bold">•</span>
+                        <span>{obs}</span>
+                      </p>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Closure Claim Card */}
+                <div className="bg-slate-50 rounded-lg border border-slate-200 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-teal-800">Closure claim</span>
+                    {previews.closureEvidence && (
+                      <img
+                        src={previews.closureEvidence}
+                        alt="Closure"
+                        className="w-8 h-8 rounded object-cover border border-slate-200"
+                      />
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-700 leading-relaxed italic">
+                    "{analysisResult.closureClaim}"
+                  </p>
+                </div>
+
+                {/* Current Observations Card */}
+                <div className="bg-slate-50 rounded-lg border border-slate-200 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-teal-800">Current condition</span>
+                    {previews.currentImage && (
+                      <img
+                        src={previews.currentImage}
+                        alt="Current"
+                        className="w-8 h-8 rounded object-cover border border-slate-200"
+                      />
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-700 space-y-1.5 leading-relaxed">
+                    {analysisResult.currentObservations?.map((obs, i) => (
+                      <p key={i} className="flex items-start gap-1.5">
+                        <span className="text-teal-700 font-bold">•</span>
+                        <span>{obs}</span>
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Evidence Comparison Narrative */}
+              <div className="p-4 rounded-lg bg-teal-50/50 border border-teal-200/60 space-y-1.5">
+                <span className="text-xs font-bold text-teal-900 uppercase tracking-wider">
+                  Comparative Analysis
+                </span>
+                <p className="text-xs sm:text-sm text-slate-800 leading-relaxed">
+                  {analysisResult.evidenceComparison}
                 </p>
               </div>
-            ) : (
-              /* Selected Image Preview */
-              <div className="bg-slate-950/60 rounded-xl p-4 border border-slate-800 flex flex-col sm:flex-row items-center gap-4">
-                <div className="w-32 h-32 rounded-lg bg-slate-900 border border-slate-800 overflow-hidden shrink-0 flex items-center justify-center relative">
-                  <img
-                    src={previewUrl}
-                    alt="Uploaded test sample"
-                    className="w-full h-full object-cover"
-                  />
+            </div>
+
+            {/* Uncertainty and Limitations */}
+            <div className="bg-slate-50 rounded-lg border border-slate-200 p-5 space-y-3">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                <HelpCircle className="w-4 h-4 text-slate-500" />
+                Uncertainty & Limitations
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs text-slate-600 leading-relaxed">
+                <div>
+                  <span className="font-semibold text-slate-700 block mb-1">Observations not established:</span>
+                  <ul className="space-y-1 list-disc list-inside">
+                    {analysisResult.uncertainties?.map((u, i) => (
+                      <li key={i}>{u}</li>
+                    ))}
+                  </ul>
                 </div>
-                <div className="flex-1 min-w-0 space-y-1 text-left w-full sm:w-auto">
-                  <p className="text-sm font-medium text-white truncate">{selectedFile.name}</p>
-                  <p className="text-xs text-slate-400 font-mono">
-                    {(selectedFile.size / 1024).toFixed(1)} KB • {selectedFile.type}
-                  </p>
-                  <p className="text-xs text-emerald-400 flex items-center gap-1 pt-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> Ready for Gemma 4 processing
+                <div>
+                  <span className="font-semibold text-slate-700 block mb-1">Operational constraints:</span>
+                  <ul className="space-y-1 list-disc list-inside">
+                    {analysisResult.limitations?.map((l, i) => (
+                      <li key={i}>{l}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            {/* Editable Follow-Up Message Card */}
+            <div className="border border-slate-200 rounded-lg p-5 space-y-3 bg-white">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h4 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                    <Edit3 className="w-4 h-4 text-teal-700" />
+                    Editable Follow-Up Message
+                  </h4>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Review and edit this factual message before submitting to official channels.
                   </p>
                 </div>
                 <button
                   type="button"
-                  onClick={handleClearImage}
-                  disabled={isSubmitting}
-                  className="px-3 py-1.5 text-xs text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg border border-slate-800 hover:border-rose-500/20 transition self-start sm:self-center"
+                  onClick={handleCopyMessage}
+                  className="self-start sm:self-auto px-3 py-1.5 text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-md border border-slate-300 transition flex items-center gap-1.5 cursor-pointer"
                 >
-                  <span className="flex items-center gap-1.5">
-                    <X className="w-3.5 h-3.5" /> Remove
-                  </span>
+                  {copiedMessage ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-600" />
+                      <span className="text-emerald-700">Copied to Clipboard</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5 text-slate-500" />
+                      <span>Copy Message</span>
+                    </>
+                  )}
                 </button>
               </div>
-            )}
 
-            {/* Optional Custom Prompt */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                Model Prompt <span className="text-slate-500 font-normal">(optional — default safe prompt provided)</span>
-              </label>
               <textarea
-                value={customPrompt}
-                onChange={(e) => setCustomPrompt(e.target.value)}
-                placeholder="Describe this test image in detail and identify visible objects and conditions without guessing or assuming facts."
-                rows={2}
-                maxLength={1000}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-sm text-slate-200 placeholder-slate-500 resize-none"
+                value={editableMessage}
+                onChange={(e) => setEditableMessage(e.target.value)}
+                rows={4}
+                className="w-full p-3 text-xs sm:text-sm text-slate-800 bg-slate-50 border border-slate-200 rounded-md focus:border-teal-600 focus:ring-1 focus:ring-teal-600 outline-none resize-y leading-relaxed font-sans"
               />
             </div>
 
-            {/* Submit / Trigger Button */}
-            <div className="flex items-center justify-between pt-2">
-              <span className="text-xs text-slate-500">
-                Endpoint: <code className="text-slate-400 font-mono">POST /api/gemma-smoke-test</code>
-              </span>
-              <button
-                type="submit"
-                disabled={!selectedFile || isSubmitting || !health.online}
-                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 disabled:opacity-50 text-white font-medium text-sm rounded-xl shadow-lg shadow-blue-600/20 transition flex items-center gap-2"
-              >
-                {isSubmitting ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Processing with Gemma 4...</span>
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-4 h-4" />
-                    <span>Run Gemma 4 Smoke Test</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </form>
+            {/* Action Bar */}
+            <div className="border-t border-slate-200 pt-6 flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleCopySummary}
+                  className="px-4 py-2 text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg border border-slate-300 transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  {copiedSummary ? (
+                    <>
+                      <Check className="w-4 h-4 text-emerald-600" />
+                      <span className="text-emerald-700">Summary Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-4 h-4 text-slate-500" />
+                      <span>Copy Full Evidence Report</span>
+                    </>
+                  )}
+                </button>
+              </div>
 
-          {/* Error Feedback Display */}
-          {errorFeedback && (
-            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 shrink-0 text-rose-400 mt-0.5" />
-              <div>
-                <p className="font-semibold">Smoke Test Error</p>
-                <p className="text-xs text-rose-300/90 mt-1">{errorFeedback}</p>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.scrollTo({ top: 300, behavior: 'smooth' });
+                  }}
+                  className="px-3.5 py-2 text-xs text-slate-600 hover:text-teal-700 font-medium rounded-lg hover:bg-slate-100 transition cursor-pointer"
+                >
+                  Modify Evidence
+                </button>
+                <button
+                  type="button"
+                  onClick={handleReset}
+                  className="px-4 py-2 text-xs font-medium bg-teal-50 hover:bg-teal-100 text-teal-800 rounded-lg border border-teal-200 transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Start New Review</span>
+                </button>
               </div>
             </div>
-          )}
-
-          {/* Live Gemma 4 Model Response Display */}
-          {smokeTestResult && (
-            <div className="space-y-4 pt-2">
-              <div className="flex items-center justify-between border-t border-slate-800 pt-4">
-                <div className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-                  <h4 className="text-sm font-semibold text-white">
-                    Live Gemma 4 Model Response
-                  </h4>
-                </div>
-                <div className="flex items-center gap-3 text-xs text-slate-400">
-                  <span className="font-mono flex items-center gap-1">
-                    <Clock className="w-3.5 h-3.5 text-slate-400" /> {smokeTestResult.latencyMs}ms
-                  </span>
-                  <button
-                    onClick={() => handleCopy(smokeTestResult.response)}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
-                  >
-                    {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    {copied ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-              </div>
-
-              {/* Metadata strip */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono bg-slate-950/80 p-3 rounded-xl border border-slate-800 text-slate-400">
-                <div>
-                  <span className="text-slate-500">Model:</span> <span className="text-indigo-300">{smokeTestResult.model}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500">Timestamp:</span> <span className="text-slate-300">{smokeTestResult.timestamp}</span>
-                </div>
-              </div>
-
-              {/* Model Output Body */}
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-slate-200 text-sm whitespace-pre-wrap leading-relaxed font-sans shadow-inner">
-                {smokeTestResult.response}
-              </div>
-            </div>
-          )}
-        </section>
+          </section>
+        )}
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-800/80 py-4 text-center text-xs text-slate-500">
-        CivicProof — Phase 1: Repository Audit, Foundation & Real Gemma 4 API Connection
+      <footer className="border-t border-slate-200 bg-white py-6 text-center text-xs text-slate-500 mt-12">
+        <div className="max-w-5xl mx-auto px-4 space-y-1">
+          <p className="font-medium text-slate-700">CivicProof — Citizen Complaint Evidence Reviewer</p>
+          <p className="text-slate-400">
+            Powered by Gemma 4 via Google Gen AI SDK. Advisory civic tool for residents.
+          </p>
+        </div>
       </footer>
     </div>
   );
