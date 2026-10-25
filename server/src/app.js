@@ -4,9 +4,13 @@ import apiRouter from './routes/index.js';
 
 const app = express();
 
-// Enable CORS
+// Enable CORS (supports specified CLIENT_URL or defaults to all origins)
+const allowedOrigins = process.env.CLIENT_URL
+  ? [process.env.CLIENT_URL, 'http://localhost:5173']
+  : '*';
+
 app.use(cors({
-  origin: '*',
+  origin: allowedOrigins,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));

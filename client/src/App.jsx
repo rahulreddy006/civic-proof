@@ -27,6 +27,10 @@ const MAX_IMAGE_SIZE = 3 * 1024 * 1024; // 3 MB
 const MAX_TOTAL_SIZE = 9 * 1024 * 1024; // 9 MB
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
+// Base URL for API requests: in production (Vercel) this points to Render backend;
+// in development (or if unset), defaults to empty string so relative paths work with Vite proxy.
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+
 export default function App() {
   // System Health
   const [health, setHealth] = useState({
@@ -95,7 +99,7 @@ export default function App() {
   const checkHealth = async () => {
     setHealth(prev => ({ ...prev, loading: true }));
     try {
-      const res = await fetch('/api/health');
+      const res = await fetch(`${API_BASE_URL}/api/health`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setHealth({
@@ -226,7 +230,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/analyze-civic-evidence', {
+      const res = await fetch(`${API_BASE_URL}/api/analyze-civic-evidence`, {
         method: 'POST',
         body: formData
       });

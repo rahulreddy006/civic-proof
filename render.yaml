@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: civicproof-backend
+    env: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GEMMA_MODEL
+        value: gemma-4-26b-a4b-it
+      - key: GEMINI_API_KEY
+        sync: false

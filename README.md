@@ -220,9 +220,52 @@ cd client
 npm run dev
 ```
 
-Vite is expected to print the local development URL, commonly `http://localhost:5173`. Use the URL printed by your terminal if the port differs.
-
 The Vite configuration proxies `/api` requests to `http://localhost:5000` in the local setup described by the project.
+
+## 🚀 Deployment Guide (Vercel + Render)
+
+CivicProof is structured for frictionless separate deployment: the React/Vite frontend on **Vercel** and the Node.js/Express backend on **Render**.
+
+### 1. Deploy Backend to Render
+
+1. Log in to your [Render Dashboard](https://dashboard.render.com/) and click **New +** → **Web Service**.
+2. Connect your GitHub repository: `https://github.com/rahulreddy006/civic-proof`.
+3. Configure the service settings:
+   - **Name:** `civicproof-backend`
+   - **Region:** Choose the region closest to your users.
+   - **Branch:** `main`
+   - **Root Directory:** `server`
+   - **Runtime:** `Node`
+   - **Build Command:** `npm install`
+   - **Start Command:** `npm start`
+4. Add the **Environment Variables** in the Render Dashboard:
+   - `GEMINI_API_KEY`: `<Your real Google AI Studio API key>`
+   - `GEMMA_MODEL`: `gemma-4-26b-a4b-it`
+   - `NODE_ENV`: `production`
+   - `CLIENT_URL`: `https://your-frontend-app.vercel.app` *(or leave blank to allow all origins)*
+5. Click **Create Web Service**.
+6. Once deployed, copy your backend URL (e.g. `https://civicproof-backend.onrender.com`).
+   - You can test it by visiting: `https://civicproof-backend.onrender.com/api/health`
+
+*(Alternatively, use the included [`render.yaml`](./render.yaml) blueprint by clicking **New +** → **Blueprint**.)*
+
+---
+
+### 2. Deploy Frontend to Vercel
+
+1. Log in to [Vercel](https://vercel.com/) and click **Add New...** → **Project**.
+2. Select your `civic-proof` repository.
+3. Configure project settings:
+   - **Framework Preset:** `Vite`
+   - **Root Directory:** Select `client` (Click "Edit" and choose the `client` folder)
+   - **Build Command:** `npm run build` *(automatic)*
+   - **Output Directory:** `dist` *(automatic)*
+4. Add the **Environment Variable**:
+   - **Name:** `VITE_API_BASE_URL`
+   - **Value:** `https://civicproof-backend.onrender.com` *(your deployed Render backend URL, without a trailing slash)*
+5. Click **Deploy**.
+
+Vercel will build and deploy your app. All evidence analysis requests will now securely route directly to your live Render backend!
 
 ## API Endpoints
 
